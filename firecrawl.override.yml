@@ -1,0 +1,6 @@
+# Copy into your Firecrawl checkout and start it with:
+#   docker compose -f docker-compose.yaml -f firecrawl.override.yml up -d
+# Stops publishing the unauthenticated API on the host, so the gateway is the only way in.
+services:
+  api:
+    ports: !reset []
