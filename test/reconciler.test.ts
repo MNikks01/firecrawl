@@ -82,6 +82,7 @@ describe.skipIf(!integration)('reconciler', () => {
     await slow.runOnce();
     const { rows } = await s.pool.query('select doc_cursor, billed_docs from jobs where id = $1', [id]);
     expect(rows[0]).toEqual({ doc_cursor: 8, billed_docs: 8 });
+    await s.pool.query(`update jobs set status = 'closed' where id = $1`, [id]); // keep later tests' passes clean
   });
 
   it('a document that slipped behind the cursor is caught by the end-of-job rescan', async () => {
@@ -93,7 +94,8 @@ describe.skipIf(!integration)('reconciler', () => {
     let forward = true;
     const fetchPage: FetchPage = async (_k, _id, skip, limit) => {
       const visible = forward ? all.filter((d) => d !== 'late') : all;
-      const data = visible.slice(skip, skip + limit).map((d) => ({ metadata: { scrapeId: d, creditsUsed: d === 'late' ? 7 : 1 } }));
+      // scrapeIds are globally unique in Firecrawl (job ids); keep the fake's unique too.
+      const data = visible.slice(skip, skip + limit).map((d) => ({ metadata: { scrapeId: `${id}-${d}`, creditsUsed: d === 'late' ? 7 : 1 } }));
       const end = skip + data.length;
       if (forward && end >= visible.length) forward = false; // by now it has committed
       return { httpStatus: 200, body: { status: 'completed', completed: 6, data, next: end < 6 ? `http://x/v2/crawl/${id}?skip=${end}` : undefined } };
