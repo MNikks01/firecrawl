@@ -1,0 +1,15 @@
+# Put the gateway on a real self-hosted Firecrawl's network so it reaches `api:3002` directly.
+#   docker compose -f docker-compose.yml -f compose.firecrawl.yml up -d --build
+# Firecrawl's compose project is named `firecrawl` and its network `backend`, hence firecrawl_backend.
+#
+# IMPORTANT: Firecrawl's own compose publishes its unauthenticated API on the host (port 3002).
+# Anyone who can reach that port skips the gateway. Start Firecrawl with firecrawl.override.yml.
+services:
+  gateway:
+    environment: { UPSTREAM_URL: http://api:3002 }
+    networks: [default, firecrawl]
+
+networks:
+  firecrawl:
+    external: true
+    name: ${FIRECRAWL_NETWORK:-firecrawl_backend}

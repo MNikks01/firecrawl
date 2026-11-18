@@ -1,0 +1,95 @@
+# Gateway + Postgres + Redis.
+#   docker compose --profile mock up -d --build            # with the bundled fake Firecrawl
+#   docker compose --profile mock --profile load run --rm k6   # load test (seeds its own teams)
+#   docker compose -f docker-compose.yml -f compose.firecrawl.yml up -d --build   # real Firecrawl
+#
+# Only the gateway port is published to everyone. Postgres, Redis, metrics and the mock are on
+# loopback (for tests and the load test's baseline), never on 0.0.0.0.
+x-gateway-env: &gateway-env
+  DATABASE_URL: postgres://gateway:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/gateway
+  REDIS_URL: redis://redis:6379
+  UPSTREAM_URL: ${UPSTREAM_URL:-http://mock:3002}
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+  AUTH_PROVIDER: ${AUTH_PROVIDER:-postgres}
+  STATIC_KEYS: ${STATIC_KEYS:-}
+  RATE_SCRAPE_PER_MIN: ${RATE_SCRAPE_PER_MIN:-100}
+  RATE_CRAWL_PER_MIN: ${RATE_CRAWL_PER_MIN:-15}
+  RATE_STATUS_PER_MIN: ${RATE_STATUS_PER_MIN:-1500}
+  RATE_LIMIT_FAIL_MODE: ${RATE_LIMIT_FAIL_MODE:-open}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+services:
+  postgres:
+    image: postgres:17.7-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: gateway
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 2s
+      retries: 30
+    ports: ["127.0.0.1:${GATEWAY_PG_PORT:-55432}:5432"]
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["127.0.0.1:${GATEWAY_REDIS_PORT:-56379}:6379"]
+
+  gateway:
+    build: .
+    environment: *gateway-env
+    ports:
+      - "${GATEWAY_PORT:-3003}:3003"
+      - "127.0.0.1:${METRICS_PORT:-9464}:9464"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3003/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      retries: 20
+    stop_grace_period: 30s
+
+  mock:
+    build: .
+    profiles: [mock]
+    command: ["node", "dist/mock/firecrawl-mock.js"]
+    environment: { PORT: "3002", MOCK_LATENCY_MS: "${MOCK_LATENCY_MS:-50}", MOCK_PAGES_PER_SEC: "5" }
+    ports: ["127.0.0.1:3002:3002"]
+
+  seed:
+    build: .
+    profiles: [load]
+    command: ["node", "dist/src/bin/admin.js", "load-seed", "--out", "/results/seed.json"]
+    environment: *gateway-env
+    user: root
+    volumes: ["./load/results:/results"]
+    depends_on: { gateway: { condition: service_healthy } }
+    restart: "no"
+
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    user: root
+    command:
+      - run
+      - --quiet
+      - -e
+      - SEED=/load/results/seed.json
+      - -e
+      - SUMMARY_OUT=/load/results/summary.md
+      - -e
+      - GATEWAY_URL=http://gateway:3003
+      - -e
+      - UPSTREAM_URL=http://mock:3002
+      - -e
+      - RATE_SCRAPE_PER_MIN=${RATE_SCRAPE_PER_MIN:-100}
+      - /load/gateway.k6.js
+    volumes: ["./load:/load"]
+    depends_on:
+      seed: { condition: service_completed_successfully }
+
+volumes:
+  pgdata:

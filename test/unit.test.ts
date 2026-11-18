@@ -128,6 +128,12 @@ describe('config', () => {
     expect(c.RATE_LIMIT_FAIL_MODE).toBe('open');
   });
 
+  it('treats empty strings (compose defaults) as unset', () => {
+    const c = loadConfig({ ...base, PUBLIC_BASE_URL: '', STATIC_KEYS: '', RATE_SCRAPE_PER_MIN: '' });
+    expect(c.PUBLIC_BASE_URL).toBeUndefined();
+    expect(c.RATE_SCRAPE_PER_MIN).toBe(100);
+  });
+
   it('never echoes values in errors', () => {
     const secret = 'postgres://user:hunter2@db';
     expect(() => loadConfig({ ...base, DATABASE_URL: secret, UPSTREAM_URL: 'ftp://nope' })).toThrow(/UPSTREAM_URL/);

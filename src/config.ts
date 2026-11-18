@@ -59,7 +59,9 @@ const schema = z.object({
 export type Config = z.infer<typeof schema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const parsed = schema.safeParse(env);
+  // Compose passes unset variables as empty strings; treat them as unset so defaults apply.
+  const cleaned = Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined && v !== ''));
+  const parsed = schema.safeParse(cleaned);
   if (!parsed.success) {
     // Never echo values: some of these are secrets.
     const issues = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');

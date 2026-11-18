@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { StaticAuthProvider } from '../src/auth/static.js';
 import { createPool, migrate } from '../src/db.js';
+import { generateKey } from '../src/keys.js';
 import { Ledger } from '../src/ledger.js';
 import { RateLimiter } from '../src/ratelimit.js';
 import { connectRedis, freshDatabase, integration } from './harness.js';
@@ -115,6 +117,20 @@ describe.skipIf(!integration)('ledger (real Postgres)', () => {
     expect((await ledger.reserve(t, 1_000_000, id, 60_000)).ok).toBe(true);
     await ledger.settle(id, { idempotencyKey: `req:${id}`, teamId: t, keyId: null, endpoint: 'scrape', credits: 7 });
     expect(await ledger.balance(t)).toMatchObject({ limit: null, used: 7, remaining: null });
+  });
+
+  it('static keys: teams are upserted so metering works, and only listed keys pass', async () => {
+    const k = generateKey().token;
+    const name = `static-${randomUUID()}`;
+    const p = await StaticAuthProvider.create(pool, [{ key: k, team: name, name: 'cfg', monthlyCredits: 42, rateMultiplier: 2 }]);
+    const who = await p.authenticate(k);
+    expect(who).toMatchObject({ teamName: name, rateMultiplier: 2 });
+    expect(await p.authenticate(generateKey().token)).toBeNull();
+    expect(await p.authenticate(k.slice(0, -1) + (k.endsWith('A') ? 'B' : 'A'))).toBeNull();
+    expect((await ledger.balance(who!.teamId)).limit).toBe(42);
+    // A redeploy with a new limit updates the same team.
+    await StaticAuthProvider.create(pool, [{ key: k, team: name, name: 'cfg', monthlyCredits: 100, rateMultiplier: 1 }]);
+    expect((await ledger.balance(who!.teamId)).limit).toBe(100);
   });
 
   it('releases holds a crashed request left behind; a late settle still charges once', async () => {

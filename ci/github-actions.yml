@@ -1,0 +1,25 @@
+# Copy to .github/workflows/ci.yml in the repo that hosts this project.
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17.7-alpine
+        env: { POSTGRES_PASSWORD: test }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 2s --health-retries 30
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+    env:
+      TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/postgres
+      TEST_REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run check
+      - run: npm audit --omit=dev --audit-level=high
