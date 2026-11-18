@@ -53,6 +53,37 @@ describe.skipIf(!integration)('reconciler', () => {
     expect(await s.used(t.teamId)).toEqual({ used: 84, reserved: 0 });
   });
 
+  it('a replica holding a stale page (lease expired mid-read) cannot move the cursor back', async () => {
+    const t = await s.team('stale', null);
+    const id = await crawl(t.token, 20);
+    await new Promise((r) => setTimeout(r, 50));
+    const metrics = new Metrics();
+    const real: FetchPage = async (_k, jid, skip, limit) => {
+      const r = await fetch(`${s.upstreamUrl}/v2/crawl/${jid}?skip=${skip}&limit=${limit}`);
+      return { httpStatus: r.status, body: await r.json() };
+    };
+    const fast = new Reconciler(s.pool, s.ledger, real, async () => {}, silentLogger, metrics, { intervalMs: 1, pageSize: 8, maxPagesPerPass: 1 });
+    // The slow replica reads its page, and before it writes, the fast one claims the job and moves on.
+    const slow = new Reconciler(
+      s.pool,
+      s.ledger,
+      async (k, jid, skip, limit) => {
+        const page = await real(k, jid, skip, limit);
+        await s.pool.query(`update jobs set next_check_at = now() where id = $1`, [jid]);
+        await fast.runOnce();
+        return page;
+      },
+      async () => {},
+      silentLogger,
+      metrics,
+      { intervalMs: 1, pageSize: 3, maxPagesPerPass: 1 },
+    );
+    await s.pool.query(`update jobs set next_check_at = now() where id = $1`, [id]);
+    await slow.runOnce();
+    const { rows } = await s.pool.query('select doc_cursor, billed_docs from jobs where id = $1', [id]);
+    expect(rows[0]).toEqual({ doc_cursor: 8, billed_docs: 8 });
+  });
+
   it('a document that slipped behind the cursor is caught by the end-of-job rescan', async () => {
     const t = await s.team('slip', null);
     const id = await crawl(t.token, 6);

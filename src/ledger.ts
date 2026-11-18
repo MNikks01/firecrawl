@@ -79,31 +79,39 @@ export class Ledger {
 
   /** Replace a reservation with the actual charge. Safe to call twice. */
   async settle(reservationId: string, event: UsageEvent): Promise<void> {
-    await this.tx(async (c) => {
-      const r = await c.query<{ period_start: string; credits: string }>(
-        `delete from reservations where id = $1 returning to_char(period_start, 'YYYY-MM-DD') as period_start, credits`,
-        [reservationId],
-      );
-      const held = r.rows[0] ? Number(r.rows[0].credits) : 0;
-      // Bill to the month the request started in; if the hold was already swept, to the current month.
-      const period = r.rows[0]?.period_start ?? periodOf(this.now());
-      let charged = 0;
-      if (event.credits > 0) {
-        const e = await c.query(
-          `insert into usage_events (idempotency_key, team_id, key_id, endpoint, credits, upstream_status, job_id)
-           values ($1, $2, $3, $4, $5, $6, $7) on conflict (idempotency_key) do nothing`,
-          [event.idempotencyKey, event.teamId, event.keyId, event.endpoint, event.credits, event.upstreamStatus ?? null, event.jobId ?? null],
-        );
-        if (e.rowCount === 1) charged = event.credits;
-      }
-      if (held === 0 && charged === 0) return;
-      await c.query(
-        `insert into credit_periods (team_id, period_start, used, reserved) values ($1, $2, $3, 0)
-         on conflict (team_id, period_start) do update
-           set used = credit_periods.used + $3, reserved = credit_periods.reserved - $4`,
-        [event.teamId, period, charged, held],
-      );
-    });
+    // One statement (one round trip, atomic): drop the hold, write the event unless its key was
+    // already used, and move both counters. Bills the month the request started in; if the hold
+    // was already swept, the current month.
+    await this.pool.query(
+      `with r as (
+         delete from reservations where id = $1 returning period_start, credits
+       ), e as (
+         insert into usage_events (idempotency_key, team_id, key_id, endpoint, credits, upstream_status, job_id)
+         select $2, $3, $4, $5, $6, $7, $8 where $6::bigint > 0
+         on conflict (idempotency_key) do nothing
+         returning credits
+       ), v as (
+         select coalesce((select period_start from r), $9::date) as period_start,
+                coalesce((select credits from r), 0) as held,
+                coalesce((select credits from e), 0) as charged
+       )
+       insert into credit_periods (team_id, period_start, used, reserved)
+       select $3, period_start, charged, 0 from v where held > 0 or charged > 0
+       on conflict (team_id, period_start) do update
+         set used = credit_periods.used + excluded.used,
+             reserved = credit_periods.reserved - (select held from v)`,
+      [
+        reservationId,
+        event.idempotencyKey,
+        event.teamId,
+        event.keyId,
+        event.endpoint,
+        event.credits,
+        event.upstreamStatus ?? null,
+        event.jobId ?? null,
+        periodOf(this.now()),
+      ],
+    );
   }
 
   /**
