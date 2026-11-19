@@ -69,18 +69,20 @@ admin key:revoke <key-id>
 4. `/admin/queues` returned 404 through the gateway and 200 straight to Firecrawl.
 5. A revoked key got 401 on the next request, with a 30 s auth cache in place.
 
-**Load (`load/gateway.k6.js`, k6 2.3.0).** The run was 200 req/s against a mock with 5 ms latency, on a 2-core sandbox that also ran Postgres, Redis, the mock and k6. The tail numbers are pessimistic.
+**Load (`load/gateway.k6.js`, k6 2.3.0)**, at 200 req/s against the mock, which adds a fixed 50 ms. Two runs:
 
-| | direct to Firecrawl | through gateway | added |
-|---|---|---|---|
-| p50 | 5.5 ms | 8.6 ms | +3.0 ms |
-| p95 | 6.2 ms | 13.7 ms | +7.5 ms |
-| p99 | 6.8 ms | 25.4 ms | +18.6 ms |
+| added by the gateway | MacBook M2, Docker (mock 50 ms) | 2-core sandbox, everything co-located (mock 5 ms) |
+|---|---|---|
+| p50 | +1.0 ms | +3.0 ms |
+| p95 | +1.1 ms | +7.5 ms |
+| p99 | not meaningful (see note) | +18.6 ms |
 
-- **Rate limit:** 149 admitted at 20 req/s for 30 s, against an expected 150 (bucket 100 + refill 50). The other 452 got clean 429s.
-- **Quota:** 50 concurrent clients spent exactly 300 of 300 credits; 12,080 requests got 402.
-- **Errors:** 0 unexpected responses.
-- **Settle change:** making settle a single statement (one round trip instead of five) cut the added p95 from +12.3 ms and the added p99 from +50.7 ms.
+The M2 run's p99 came out negative (direct 72.9 ms, gateway 58.6 ms). That's the direct scenario paying cold start by running first, not a gateway speedup. The script now warms both paths for 5 s before measuring.
+
+- **Rate limit (both runs):** 149 admitted at 20 req/s for 30 s, against an expected 150 (bucket 100 + refill 50). Every other request got a clean 429.
+- **Quota (both runs):** 50 concurrent clients spent exactly 300 of 300 credits; every other request got 402 (45,924 on the M2).
+- **Errors:** 0 unexpected responses in both runs.
+- **Settle change (sandbox):** making settle a single statement (one round trip instead of five) cut the added p95 from +12.3 ms and the added p99 from +50.7 ms.
 
 Run it yourself with `docker compose --profile mock --profile load run --rm k6`. Results go to `load/results/summary.md`.
 
@@ -111,7 +113,6 @@ Run it yourself with `docker compose --profile mock --profile load run --rm k6`.
 ## Not built / not verified
 
 - **Not run against a live Firecrawl.** The mock mirrors the v2 shapes read in source at `25c1302`. Run one session with `compose.firecrawl.yml`, including a crawl, to confirm the documents carry `scrapeId` and `creditsUsed` as the code says. The FoundationDB queue backend's document order was not checked; only the Postgres backend's was.
-- **The Docker image wasn't built here**, because Docker Hub is blocked in my sandbox. The compose files pass `docker compose config`.
 - **No per-team concurrency cap.** All teams still share Firecrawl's one concurrency pool, so one team's large crawl can delay others. A cap needs an atomic slot reservation before job creation.
 - **Endpoints closed through the gateway:**
   - v1, extract, agent, monitors and websockets;

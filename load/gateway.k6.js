@@ -20,6 +20,7 @@ const RATE = Number(__ENV.RATE || 200);
 const PER_MIN = Number(__ENV.RATE_SCRAPE_PER_MIN || 100);
 const seed = JSON.parse(open(__ENV.SEED || './results/seed.json'));
 
+const WARMUP_S = 5;
 const OVERHEAD_S = 30;
 const RL_S = 30;
 const RL_RATE = 20;
@@ -35,10 +36,12 @@ const unexpected = new Counter('unexpected');
 export const options = {
   discardResponseBodies: false,
   scenarios: {
-    direct: { executor: 'constant-arrival-rate', exec: 'direct', rate: RATE, timeUnit: '1s', duration: `${OVERHEAD_S}s`, preAllocatedVUs: 100, maxVUs: 400 },
-    gateway: { executor: 'constant-arrival-rate', exec: 'gateway', rate: RATE, timeUnit: '1s', duration: `${OVERHEAD_S}s`, preAllocatedVUs: 100, maxVUs: 400, startTime: `${OVERHEAD_S + 2}s` },
-    ratelimit: { executor: 'constant-arrival-rate', exec: 'ratelimit', rate: RL_RATE, timeUnit: '1s', duration: `${RL_S}s`, preAllocatedVUs: 20, startTime: `${2 * OVERHEAD_S + 4}s` },
-    quota: { executor: 'constant-vus', exec: 'quota', vus: 50, duration: '10s', startTime: `${2 * OVERHEAD_S + RL_S + 6}s` },
+    // Warm both paths (connections, JIT) so neither measured scenario pays cold start.
+    warmup: { executor: 'constant-arrival-rate', exec: 'warmup', rate: 50, timeUnit: '1s', duration: `${WARMUP_S}s`, preAllocatedVUs: 20 },
+    direct: { executor: 'constant-arrival-rate', exec: 'direct', rate: RATE, timeUnit: '1s', duration: `${OVERHEAD_S}s`, preAllocatedVUs: 100, maxVUs: 400, startTime: `${WARMUP_S + 1}s` },
+    gateway: { executor: 'constant-arrival-rate', exec: 'gateway', rate: RATE, timeUnit: '1s', duration: `${OVERHEAD_S}s`, preAllocatedVUs: 100, maxVUs: 400, startTime: `${WARMUP_S + OVERHEAD_S + 2}s` },
+    ratelimit: { executor: 'constant-arrival-rate', exec: 'ratelimit', rate: RL_RATE, timeUnit: '1s', duration: `${RL_S}s`, preAllocatedVUs: 20, startTime: `${WARMUP_S + 2 * OVERHEAD_S + 4}s` },
+    quota: { executor: 'constant-vus', exec: 'quota', vus: 50, duration: '10s', startTime: `${WARMUP_S + 2 * OVERHEAD_S + RL_S + 6}s` },
   },
   thresholds: {
     unexpected: ['count==0'],
@@ -52,6 +55,11 @@ export const options = {
 const body = JSON.stringify({ url: 'https://example.com' });
 const json = { 'content-type': 'application/json' };
 const auth = (k) => ({ ...json, authorization: `Bearer ${k}` });
+
+export function warmup() {
+  http.post(`${UP}/v2/scrape`, body, { headers: json, tags: { name: 'warmup' } });
+  http.post(`${GW}/v2/scrape`, body, { headers: auth(seed.throughput), tags: { name: 'warmup' } });
+}
 
 export function direct() {
   const r = http.post(`${UP}/v2/scrape`, body, { headers: json, tags: { name: 'direct' } });
@@ -90,7 +98,8 @@ export function handleSummary(data) {
   const line = (stat) => {
     const d = m('lat_direct', stat);
     const g = m('lat_gateway', stat);
-    return `| ${stat} | ${d?.toFixed(1)} ms | ${g?.toFixed(1)} ms | +${(g - d).toFixed(1)} ms |`;
+    const diff = g - d;
+    return `| ${stat} | ${d?.toFixed(1)} ms | ${g?.toFixed(1)} ms | ${diff >= 0 ? '+' : '−'}${Math.abs(diff).toFixed(1)} ms |`;
   };
   const expected = PER_MIN + (PER_MIN / 60) * RL_S;
   const md = [
