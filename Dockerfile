@@ -14,6 +14,9 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY migrations ./migrations
+# COPY keeps host permissions, and host files can be owner-only (umask 077, file sync tools).
+# The app runs as `node`, so make what it reads world-readable; nothing here is secret.
+RUN chmod -R a+rX /app/package.json /app/dist /app/migrations
 USER node
 EXPOSE 3003 9464
 CMD ["node", "dist/src/bin/gateway.js"]
