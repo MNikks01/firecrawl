@@ -119,7 +119,3 @@ Run it yourself with `docker compose --profile mock --profile load run --rm k6`.
   - `/v2/crawl/active`, which the gateway could serve from its own job table.
 - **Map is billed at 1 credit**, since Firecrawl doesn't report a figure for it.
 - **Dev-only advisory:** `npm audit` flags picomatch ≤4.0.7 (ReDoS) through vitest, with no fixed version available. Production dependencies are clean.
-
-## Outreach note
-
-Firecrawl's listing says "remote-global", but other Firecrawl roles are Americas-only and some remote roles are contracts. Ask about India eligibility and employment type in the first message.
