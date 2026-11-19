@@ -28,7 +28,8 @@ client ──Bearer fcgw_…──▶ gateway :3003 ──(private network, no a
 ## Run it
 
 ```bash
-cp .env.example .env          # set POSTGRES_PASSWORD
+cp .env.example .env
+sed -i.bak "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 24)/" .env
 docker compose --profile mock up -d --build            # against the bundled fake Firecrawl
 alias admin='docker compose exec gateway node dist/src/bin/admin.js'
 admin team:create acme --monthly-credits 50000
